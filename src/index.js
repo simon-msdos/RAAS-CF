@@ -1,168 +1,182 @@
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
-    const path = url.pathname.slice(1);
+    try {
+      const url = new URL(request.url);
+      const path = url.pathname.slice(1);
 
-    if (!env.REDIRECTS || !env.ADMIN_PASS) {
-      return new Response(SETUP_WIZARD_HTML(!env.REDIRECTS, !env.ADMIN_PASS), { headers: { 'Content-Type': 'text/html' } });
-    }
-
-    const getAuth = async () => {
-      const user = await env.REDIRECTS.get('__ADMIN_USER') || env.ADMIN_USER;
-      const pass = await env.REDIRECTS.get('__ADMIN_PASS') || env.ADMIN_PASS;
-      return { user, pass };
-    };
-
-    const isAuthorized = async (req) => {
-      const cookie = req.headers.get('Cookie');
-      if (cookie && cookie.includes('raas_session=')) {
-        const session = cookie.split('raas_session=')[1].split(';')[0];
-        const storedSession = await env.REDIRECTS.get('__GOOGLE_SESSION');
-        if (session === storedSession) return true;
-      }
-      const authHeader = req.headers.get('Authorization');
-      if (!authHeader) return false;
-      const [scheme, encoded] = authHeader.split(' ');
-      if (!encoded || scheme !== 'Basic') return false;
-      const decoded = atob(encoded);
-      const { user, pass } = await getAuth();
-      return decoded === `${user}:${pass}`;
-    };
-
-    // Google OAuth...
-    if (url.pathname === '/admin/login/google') {
-      const state = crypto.randomUUID();
-      await env.REDIRECTS.put('__OAUTH_STATE', state, { expirationTtl: 600 });
-      return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?client_id=${env.GOOGLE_CLIENT_ID}&redirect_uri=https://${env.BASE_DOMAIN}/admin/callback/google&response_type=code&scope=email%20profile&state=${state}`, 302);
-    }
-
-    if (url.pathname === '/admin/callback/google') {
-      const code = url.searchParams.get('code');
-      const state = url.searchParams.get('state');
-      const savedState = await env.REDIRECTS.get('__OAUTH_STATE');
-      if (state !== savedState) return new Response('Invalid state', { status: 403 });
-      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: `https://${env.BASE_DOMAIN}/admin/callback/google`, grant_type: 'authorization_code' })
-      });
-      const tokens = await tokenRes.json();
-      const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', { headers: { Authorization: `Bearer ${tokens.access_token}` } });
-      const userInfo = await userRes.json();
-      if (userInfo.email !== env.GOOGLE_ALLOWED_EMAIL) return new Response('Unauthorized', { status: 403 });
-      const session = crypto.randomUUID();
-      await env.REDIRECTS.put('__GOOGLE_SESSION', session, { expirationTtl: 86400 });
-      return new Response(null, { status: 302, headers: { 'Location': '/admin', 'Set-Cookie': `raas_session=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400` } });
-    }
-
-    if (path.startsWith('admin') || path.startsWith('api')) {
-      if (!await isAuthorized(request)) {
-        return new Response('Unauthorized', { status: 401, headers: { 'WWW-Authenticate': 'Basic realm="Admin"' } });
+      if (!env.REDIRECTS || !env.ADMIN_PASS) {
+        return new Response(SETUP_WIZARD_HTML(!env.REDIRECTS, !env.ADMIN_PASS), { headers: { 'Content-Type': 'text/html' } });
       }
 
-      if (url.pathname === '/api/links' && request.method === 'GET') {
-        const list = await env.REDIRECTS.list();
-        const manual = await Promise.all(list.keys.filter(k => !k.name.startsWith('__')).map(async k => {
-          const val = await env.REDIRECTS.get(k.name);
-          let data = { target: val, type: 'script' };
-          try { data = JSON.parse(val); } catch(e) {}
-          const stats = await env.REDIRECTS.get(`__stats:${k.name}`);
-          return { slug: k.name, ...data, hits: stats ? JSON.parse(stats).count : 0 };
-        }));
-        const gitMapRaw = await env.REDIRECTS.get('__github_map');
-        const autoMap = gitMapRaw ? JSON.parse(gitMapRaw) : {};
-        const auto = await Promise.all(Object.entries(autoMap).map(async ([slug, target]) => {
-          const stats = await env.REDIRECTS.get(`__stats:${slug}`);
-          return { slug, target, type: 'script', hits: stats ? JSON.parse(stats).count : 0 };
-        }));
-        return Response.json({ manual, auto });
-      }
+      const getAuth = async () => {
+        const user = await env.REDIRECTS.get('__ADMIN_USER') || env.ADMIN_USER;
+        const pass = await env.REDIRECTS.get('__ADMIN_PASS') || env.ADMIN_PASS;
+        return { user, pass };
+      };
 
-      if (url.pathname.startsWith('/api/stats/') && request.method === 'GET') {
-        const slug = url.pathname.split('/').pop();
-        const stats = await env.REDIRECTS.get(`__stats:${slug}`);
-        return Response.json(stats ? JSON.parse(stats) : { count: 0, logs: [] });
-      }
-
-      if (url.pathname === '/api/links' && request.method === 'POST') {
-        const { slug, target, type } = await request.json();
-        await env.REDIRECTS.put(slug, JSON.stringify({ target, type: type || 'script' }));
-        return Response.json({ success: true });
-      }
-
-      if (url.pathname.startsWith('/api/links/') && request.method === 'DELETE') {
-        const slug = url.pathname.split('/').pop();
-        await env.REDIRECTS.delete(slug);
-        await env.REDIRECTS.delete(`__stats:${slug}`);
-        return Response.json({ success: true });
-      }
-
-      if (url.pathname === '/api/config' && request.method === 'POST') {
-        const { github_token, admin_pass, current_pass } = await request.json();
-        if (github_token) await env.REDIRECTS.put('__GITHUB_TOKEN', github_token);
-        if (admin_pass) {
-          const { pass } = await getAuth();
-          if (current_pass !== pass) return Response.json({ success: false, error: 'Password incorrect' }, { status: 403 });
-          await env.REDIRECTS.put('__ADMIN_PASS', admin_pass);
+      const isAuthorized = async (req) => {
+        const cookie = req.headers.get('Cookie');
+        if (cookie && cookie.includes('raas_session=')) {
+          const session = cookie.split('raas_session=')[1].split(';')[0];
+          const storedSession = await env.REDIRECTS.get('__GOOGLE_SESSION');
+          if (session && session === storedSession) return true;
         }
-        return Response.json({ success: true });
+        const authHeader = req.headers.get('Authorization');
+        if (!authHeader) return false;
+        const [scheme, encoded] = authHeader.split(' ');
+        if (!encoded || scheme !== 'Basic') return false;
+        const decoded = atob(encoded);
+        const { user, pass } = await getAuth();
+        return decoded === `${user}:${pass}`;
+      };
+
+      // OAuth Routes
+      if (url.pathname === '/admin/login/google') {
+        const state = crypto.randomUUID();
+        await env.REDIRECTS.put('__OAUTH_STATE', state, { expirationTtl: 600 });
+        return Response.redirect(`https://accounts.google.com/o/oauth2/v2/auth?client_id=${env.GOOGLE_CLIENT_ID}&redirect_uri=https://${env.BASE_DOMAIN}/admin/callback/google&response_type=code&scope=email%20profile&state=${state}`, 302);
       }
 
-      if (url.pathname === '/api/sync' && request.method === 'POST') {
-        const token = await env.REDIRECTS.get('__GITHUB_TOKEN') || env.GITHUB_TOKEN;
-        if (!token) return Response.json({ success: false, error: 'No token' }, { status: 400 });
-        const res = await fetch(`https://api.github.com/user/repos?per_page=100&type=owner`, { headers: { 'Authorization': `token ${token}`, 'User-Agent': 'RAAS' } });
-        const repos = await res.json();
-        const map = {};
-        await Promise.all(repos.map(async (repo) => {
-          const cRes = await fetch(`https://api.github.com/repos/${repo.full_name}/contents`, { headers: { 'Authorization': `token ${token}`, 'User-Agent': 'RAAS' } });
-          if (cRes.ok) {
-            const contents = await cRes.json();
-            const sh = contents.find(f => f.name.endsWith('.sh'));
-            if (sh) map[repo.name] = sh.download_url;
+      if (url.pathname === '/admin/callback/google') {
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+        const savedState = await env.REDIRECTS.get('__OAUTH_STATE');
+        if (state !== savedState) return new Response('Invalid state', { status: 403 });
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET, redirect_uri: `https://${env.BASE_DOMAIN}/admin/callback/google`, grant_type: 'authorization_code' })
+        });
+        const tokens = await tokenRes.json();
+        const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', { headers: { Authorization: `Bearer ${tokens.access_token}` } });
+        const userInfo = await userRes.json();
+        if (userInfo.email !== env.GOOGLE_ALLOWED_EMAIL) return new Response('Unauthorized email', { status: 403 });
+        const session = crypto.randomUUID();
+        await env.REDIRECTS.put('__GOOGLE_SESSION', session, { expirationTtl: 86400 });
+        return new Response(null, { status: 302, headers: { 'Location': '/admin', 'Set-Cookie': `raas_session=${session}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400` } });
+      }
+
+      if (path.startsWith('admin') || path.startsWith('api')) {
+        if (!await isAuthorized(request)) {
+          return new Response('Unauthorized', { status: 401, headers: { 'WWW-Authenticate': 'Basic realm="Admin"' } });
+        }
+
+        if (url.pathname === '/api/links' && request.method === 'GET') {
+          const list = await env.REDIRECTS.list();
+          const manual = await Promise.all(list.keys.filter(k => !k.name.startsWith('__')).map(async k => {
+            const val = await env.REDIRECTS.get(k.name);
+            let data = { target: val, type: 'script' };
+            try { if(val && val.startsWith('{')) data = JSON.parse(val); } catch(e) {}
+            const stats = await env.REDIRECTS.get(`__stats:${k.name}`);
+            return { slug: k.name, ...data, hits: stats ? JSON.parse(stats).count : 0 };
+          }));
+          const gitMapRaw = await env.REDIRECTS.get('__github_map');
+          const autoMap = gitMapRaw ? JSON.parse(gitMapRaw) : {};
+          const auto = await Promise.all(Object.entries(autoMap).map(async ([slug, target]) => {
+            const stats = await env.REDIRECTS.get(`__stats:${slug}`);
+            return { slug, target, type: 'script', hits: stats ? JSON.parse(stats).count : 0 };
+          }));
+          return Response.json({ manual, auto });
+        }
+
+        if (url.pathname.startsWith('/api/stats/') && request.method === 'GET') {
+          const slug = url.pathname.split('/').pop();
+          const stats = await env.REDIRECTS.get(`__stats:${slug}`);
+          return Response.json(stats ? JSON.parse(stats) : { count: 0, logs: [] });
+        }
+
+        if (url.pathname === '/api/links' && request.method === 'POST') {
+          const { slug, target, type } = await request.json();
+          await env.REDIRECTS.put(slug, JSON.stringify({ target, type: type || 'script' }));
+          return Response.json({ success: true });
+        }
+
+        if (url.pathname.startsWith('/api/links/') && request.method === 'DELETE') {
+          const slug = url.pathname.split('/').pop();
+          await env.REDIRECTS.delete(slug);
+          await env.REDIRECTS.delete(`__stats:${slug}`);
+          return Response.json({ success: true });
+        }
+
+        if (url.pathname === '/api/config' && request.method === 'POST') {
+          const { github_token, admin_pass, current_pass } = await request.json();
+          if (github_token) await env.REDIRECTS.put('__GITHUB_TOKEN', github_token);
+          if (admin_pass) {
+            const { pass } = await getAuth();
+            if (current_pass !== pass) return Response.json({ success: false, error: 'Password incorrect' }, { status: 403 });
+            await env.REDIRECTS.put('__ADMIN_PASS', admin_pass);
           }
-        }));
-        await env.REDIRECTS.put('__github_map', JSON.stringify(map));
-        return Response.json({ success: true, count: Object.keys(map).length });
+          return Response.json({ success: true });
+        }
+
+        if (url.pathname === '/api/sync' && request.method === 'POST') {
+          const token = await env.REDIRECTS.get('__GITHUB_TOKEN') || env.GITHUB_TOKEN;
+          if (!token) return Response.json({ success: false, error: 'No token' }, { status: 400 });
+          const res = await fetch(`https://api.github.com/user/repos?per_page=100&type=owner`, { headers: { 'Authorization': `token ${token}`, 'User-Agent': 'RAAS' } });
+          const repos = await res.json();
+          const map = {};
+          await Promise.all(repos.map(async (repo) => {
+            try {
+              const cRes = await fetch(`https://api.github.com/repos/${repo.full_name}/contents`, { headers: { 'Authorization': `token ${token}`, 'User-Agent': 'RAAS' } });
+              if (cRes.ok) {
+                const contents = await cRes.json();
+                const sh = contents.find(f => f.name.endsWith('.sh'));
+                if (sh) map[repo.name] = sh.download_url;
+              }
+            } catch(e) {}
+          }));
+          await env.REDIRECTS.put('__github_map', JSON.stringify(map));
+          return Response.json({ success: true, count: Object.keys(map).length });
+        }
+
+        if (path === 'admin') return new Response(ADMIN_HTML(env.BASE_DOMAIN, !!env.GOOGLE_CLIENT_ID), { headers: { 'Content-Type': 'text/html' } });
       }
 
-      if (path === 'admin') return new Response(ADMIN_HTML(env.BASE_DOMAIN, !!env.GOOGLE_CLIENT_ID), { headers: { 'Content-Type': 'text/html' } });
+      if (path === "") return Response.redirect(`https://${env.MAIN_SITE}`, 302);
+
+      // --- REDIRECTOR ENGINE ---
+      let target = "";
+      let val = await env.REDIRECTS.get(path);
+      if (val) {
+        try {
+          if (val.startsWith('{')) target = JSON.parse(val).target;
+          else target = val;
+        } catch(e) { target = val; }
+      } else {
+        const gitMapRaw = await env.REDIRECTS.get('__github_map');
+        if (gitMapRaw) {
+          const gitMap = JSON.parse(gitMapRaw);
+          target = gitMap[path];
+        }
+      }
+      
+      if (!target) target = `https://raw.githubusercontent.com/${env.GITHUB_USER}/${path}/master/${path}.sh`;
+
+      // LOG STATS
+      try {
+        const raw = await env.REDIRECTS.get(`__stats:${path}`);
+        const stats = raw ? JSON.parse(raw) : { count: 0, logs: [] };
+        stats.count++;
+        stats.logs.unshift({ 
+          t: new Date().toISOString(), 
+          ip: request.headers.get('cf-connecting-ip') || 'unknown'
+        });
+        stats.logs = stats.logs.slice(0, 10);
+        await env.REDIRECTS.put(`__stats:${path}`, JSON.stringify(stats));
+      } catch(e) {}
+
+      // Ensure target is valid URL
+      if (!target.startsWith('http')) target = 'https://' + target;
+
+      return Response.redirect(target, 302);
+
+    } catch (err) {
+      return new Response(`Worker Error: ${err.message}`, { status: 500 });
     }
-
-    if (path === "") return Response.redirect(`https://${env.MAIN_SITE}`, 302);
-
-    // --- REDIRECTOR ENGINE ---
-    let target = "";
-    let val = await env.REDIRECTS.get(path);
-    if (val) {
-      try { target = JSON.parse(val).target; } catch(e) { target = val; }
-    } else {
-      const gitMapRaw = await env.REDIRECTS.get('__github_map');
-      if (gitMapRaw) target = JSON.parse(gitMapRaw)[path];
-    }
-    
-    if (!target) target = `https://raw.githubusercontent.com/${env.GITHUB_USER}/${path}/master/${path}.sh`;
-
-    // LOG STATS
-    const logStats = async () => {
-      const raw = await env.REDIRECTS.get(`__stats:${path}`);
-      const stats = raw ? JSON.parse(raw) : { count: 0, logs: [] };
-      stats.count++;
-      stats.logs.unshift({ 
-        t: new Date().toISOString(), 
-        ip: request.headers.get('cf-connecting-ip') || 'unknown',
-        ua: request.headers.get('user-agent') || 'unknown'
-      });
-      stats.logs = stats.logs.slice(0, 10); // Keep last 10
-      await env.REDIRECTS.put(`__stats:${path}`, JSON.stringify(stats));
-    };
-    await logStats();
-
-    return Response.redirect(target, 302);
   }
 };
 
-const SETUP_WIZARD_HTML = (mKV, mS) => `<!DOCTYPE html><html><head><title>Setup</title><style>body{background:#0a0a0a;color:#00ff41;font-family:monospace;padding:40px;}</style></head><body><h1>Setup Needed</h1><p>KV: ${mKV?'NO':'OK'}</p><p>Pass: ${mS?'NO':'OK'}</p><button onclick="location.reload()">Refresh</button></body></html>`;
+const SETUP_WIZARD_HTML = (mKV, mS) => `<!DOCTYPE html><html><head><title>Setup</title></head><body><h1>Setup Needed</h1><p>KV: ${mKV?'NO':'OK'}</p><p>Pass: ${mS?'NO':'OK'}</p><button onclick="location.reload()">Refresh</button></body></html>`;
 
 const ADMIN_HTML = (domain, hasGoogle) => `
 <!DOCTYPE html>
@@ -181,7 +195,7 @@ const ADMIN_HTML = (domain, hasGoogle) => `
         .btn-primary { background: var(--primary); color: white; }
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
         .btn-danger { background: #ef4444; color: white; }
-        input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+        input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; box-sizing: border-box; }
         .link-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); }
         .badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--border); font-weight: bold; }
         .curl-box { background: #000; color: #00ff41; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 11px; max-width: 300px; overflow-x: auto; }
@@ -275,13 +289,15 @@ const ADMIN_HTML = (domain, hasGoogle) => `
         };
         const addLink = async () => {
             const slug=document.getElementById('slug').value, target=document.getElementById('target').value, type=document.getElementById('type').value;
+            if(!slug || !target) return showToast('Fill all fields', 'error');
             await fetch('/api/links', { method:'POST', body:JSON.stringify({slug,target,type}) });
             loadLinks(); showToast('Created');
+            document.getElementById('slug').value=''; document.getElementById('target').value='';
         };
         const deleteLink = async (s) => {
             if(!confirm('Delete?')) return;
             await fetch('/api/links/'+s, { method:'DELETE' });
-            await loadLinks(); showToast('Deleted');
+            loadLinks(); showToast('Deleted');
         };
         const syncGitHub = async () => {
             showToast('Syncing...');
