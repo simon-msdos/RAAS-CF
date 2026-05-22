@@ -30,7 +30,6 @@ export default {
         return decoded === `${user}:${pass}`;
       };
 
-      // OAuth Routes
       if (url.pathname === '/admin/login/google') {
         const state = crypto.randomUUID();
         await env.REDIRECTS.put('__OAUTH_STATE', state, { expirationTtl: 600 });
@@ -134,14 +133,10 @@ export default {
 
       if (path === "") return Response.redirect(`https://${env.MAIN_SITE}`, 302);
 
-      // --- REDIRECTOR ENGINE ---
       let target = "";
       let val = await env.REDIRECTS.get(path);
       if (val) {
-        try {
-          if (val.startsWith('{')) target = JSON.parse(val).target;
-          else target = val;
-        } catch(e) { target = val; }
+        try { if (val.startsWith('{')) target = JSON.parse(val).target; else target = val; } catch(e) { target = val; }
       } else {
         const gitMapRaw = await env.REDIRECTS.get('__github_map');
         if (gitMapRaw) {
@@ -150,40 +145,48 @@ export default {
         }
       }
       
-      if (!target) target = `https://raw.githubusercontent.com/${env.GITHUB_USER}/${path}/master/${path}.sh`;
+      if (!target) {
+        const rawUrl = `https://raw.githubusercontent.com/${env.GITHUB_USER}/${path}/master/${path}.sh`;
+        const check = await fetch(rawUrl, { method: 'HEAD' });
+        if (check.ok) target = rawUrl;
+      }
 
-      // LOG STATS
+      if (!target) {
+        return new Response(ERROR_PAGE_HTML('404 Not Found', `The path "/${path}" does not match any redirects.`, env.GITHUB_USER), { 
+          status: 404, headers: { 'Content-Type': 'text/html' } 
+        });
+      }
+
       try {
         const raw = await env.REDIRECTS.get(`__stats:${path}`);
         const stats = raw ? JSON.parse(raw) : { count: 0, logs: [] };
         stats.count++;
-        stats.logs.unshift({ 
-          t: new Date().toISOString(), 
-          ip: request.headers.get('cf-connecting-ip') || 'unknown'
-        });
+        stats.logs.unshift({ t: new Date().toISOString(), ip: request.headers.get('cf-connecting-ip') || 'unknown' });
         stats.logs = stats.logs.slice(0, 10);
         await env.REDIRECTS.put(`__stats:${path}`, JSON.stringify(stats));
       } catch(e) {}
 
-      // Ensure target is valid URL
       if (!target.startsWith('http')) target = 'https://' + target;
-
       return Response.redirect(target, 302);
 
     } catch (err) {
-      return new Response(`Worker Error: ${err.message}`, { status: 500 });
+      return new Response(ERROR_PAGE_HTML('Worker Exception', err.message, env.GITHUB_USER), { 
+        status: 500, headers: { 'Content-Type': 'text/html' } 
+      });
     }
   }
 };
 
-const SETUP_WIZARD_HTML = (mKV, mS) => `<!DOCTYPE html><html><head><title>Setup</title></head><body><h1>Setup Needed</h1><p>KV: ${mKV?'NO':'OK'}</p><p>Pass: ${mS?'NO':'OK'}</p><button onclick="location.reload()">Refresh</button></body></html>`;
+const ERROR_PAGE_HTML = (title, msg, user) => `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>${title}</title><style>body{background:#0f172a;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}.card{background:#1e293b;padding:40px;border-radius:16px;max-width:500px;text-align:center}.btn{display:inline-block;background:#3b82f6;color:white;padding:12px 24px;border-radius:8px;text-decoration:none}</style></head><body><div class="card"><h1>${title}</h1><p>${msg}</p><a href="https://github.com/${user}/RAAS-CF" class="btn">View Docs</a></div></body></html>`;
+
+const SETUP_WIZARD_HTML = (mKV, mS) => `<!DOCTYPE html><html><body><h1>Setup Required</h1><p>KV: ${mKV?'NO':'OK'}</p><p>Pass: ${mS?'NO':'OK'}</p><button onclick="location.reload()">Refresh</button></body></html>`;
 
 const ADMIN_HTML = (domain, hasGoogle) => `
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
-    <title>RAAS Admin | ${domain}</title>
+    <title>RAAS Admin | \${domain}</title>
     <style>
         :root[data-theme="light"] { --bg: #f9fafb; --card: #ffffff; --text: #111827; --border: #e5e7eb; --primary: #2563eb; --git: #059669; --web: #7c3aed; }
         :root[data-theme="dark"] { --bg: #111827; --card: #1f2937; --text: #f9fafb; --border: #374151; --primary: #3b82f6; --git: #10b981; --web: #a78bfa; }
@@ -195,7 +198,7 @@ const ADMIN_HTML = (domain, hasGoogle) => `
         .btn-primary { background: var(--primary); color: white; }
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
         .btn-danger { background: #ef4444; color: white; }
-        input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; box-sizing: border-box; }
+        input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-size: 13px; }
         .link-row { display: grid; grid-template-columns: 1fr auto auto auto; gap: 12px; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); }
         .badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--border); font-weight: bold; }
         .curl-box { background: #000; color: #00ff41; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 11px; max-width: 300px; overflow-x: auto; }
@@ -230,16 +233,29 @@ const ADMIN_HTML = (domain, hasGoogle) => `
                     <input id="admin_pass" type="password" placeholder="New Password" style="flex:1">
                     <button class="btn btn-outline" onclick="updatePassword()">Update</button>
                 </div>
+                <div id="google-auth-section"></div>
+            </div>
+            <div class="card">
+                <h3>Discovery</h3>
+                <div class="flex"><input id="github_token" type="password" placeholder="GitHub Token" style="flex:1"><button class="btn btn-outline" onclick="saveConfig({github_token: document.getElementById('github_token').value})">Save</button></div>
+                <p style="font-size:11px; margin-top:8px;"><a href="https://github.com/settings/tokens/new?description=RAAS-CF&scopes=repo,read:user" target="_blank" style="color:var(--primary)">Generate Token →</a></p>
             </div>
         </div>
         <div class="card">
-            <h3>Active Redirects</h3>
+            <h3 id="list-title">Active Redirects</h3>
             <div id="link-list"></div>
         </div>
     </div>
     <div id="toast"></div>
     <script>
-        const DOMAIN = "${domain}";
+        const DOMAIN = "\${domain}";
+        const hasGoogle = \${hasGoogle};
+        if (hasGoogle) {
+            document.getElementById('google-auth-section').innerHTML = \`
+                <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border);">
+                    <a href="/admin/login/google" class="btn btn-outline" style="width: 100%;">Connect Google Account</a>
+                </div>\`;
+        }
         const showToast = (m, t='success') => {
             const el = document.getElementById('toast');
             el.innerText = m; el.style.background = t==='success'?'#059669':'#ef4444';
@@ -256,20 +272,20 @@ const ADMIN_HTML = (domain, hasGoogle) => `
             let h = '';
             const row = (s, u, t, isA, hits) => {
                 const isW = t==='web';
-                const cmd = \`curl -L \${DOMAIN}/\${s} | bash\`;
+                const cmd = \\\`curl -L \${DOMAIN}/\${s} | bash\\\`;
                 return \`
                     <div style="border-bottom:1px solid var(--border); padding:10px 0;">
                         <div class="link-row">
                             <div>
-                                <span class="badge" style="color:\${isA?'var(--git)':(isW?'var(--web)':'#888')}">\${isA?'GitHub':(isW?'Web':'Script')}</span>
+                                <span class="badge \${isA?'badge-git':(isW?'badge-web':'')}" style="color:\${isA?'var(--git)':(isW?'var(--web)':'#888')}">\${isA?'GitHub':(isW?'Web':'Script')}</span>
                                 <span style="font-weight:bold; margin-left:8px;">/\${s}</span>
                                 <div style="font-size:10px; color:#888;">Hits: \${hits}</div>
                             </div>
-                            \${isW ? \`<a href="https://\${DOMAIN}/\${s}" target="_blank" style="font-size:11px;">Open ↗</a>\` : \`<div class="curl-box">\${cmd}</div>\`}
+                            \${isW ? \\\`<a href="https://\${DOMAIN}/\${s}" target="_blank" style="font-size:11px;">Open ↗</a>\\\` : \\\`<div class="curl-box">\${cmd}</div>\\\`}
                             <div style="display:flex; gap:5px;">
                                 <button class="btn btn-outline btn-sm" onclick="showStats('\${s}')">Stats</button>
                                 <button class="btn btn-outline btn-sm" onclick="navigator.clipboard.writeText('\${isW?'https://'+DOMAIN+'/'+s:cmd}').then(()=>showToast('Copied!'))">Copy</button>
-                                \${!isA ? \`<button class="btn btn-danger btn-sm" onclick="deleteLink('\${s}')">Del</button>\` : ''}
+                                \${!isA ? \\\`<button class="btn btn-danger btn-sm" onclick="deleteLink('\${s}')">Del</button>\` : ''}
                             </div>
                         </div>
                         <div id="stats-\${s}" class="stats-panel"></div>
@@ -278,13 +294,14 @@ const ADMIN_HTML = (domain, hasGoogle) => `
             d.manual.forEach(l => h += row(l.slug, l.target, l.type, false, l.hits));
             d.auto.forEach(l => h += row(l.slug, l.target, l.type, true, l.hits));
             list.innerHTML = h || '<p style="text-align:center;color:#888;">No links.</p>';
+            document.getElementById('list-title').innerText = \\\`Active Redirects (\${d.manual.length + d.auto.length})\\\`;
         };
         const showStats = async (s) => {
             const el = document.getElementById('stats-'+s);
             if(el.style.display==='block') { el.style.display='none'; return; }
             const r = await fetch('/api/stats/'+s);
             const d = await r.json();
-            el.innerHTML = '<strong>Recent Activity:</strong>' + d.logs.map(l => \`<div style="margin-top:4px;">\${l.t.split('T')[0]} \${l.t.split('T')[1].slice(0,5)} - IP: \${l.ip}</div>\`).join('') || 'No data.';
+            el.innerHTML = '<strong>Recent Activity:</strong>' + d.logs.map(l => \\\`<div style="margin-top:4px;">\${l.t.split('T')[0]} \${l.t.split('T')[1].slice(0,5)} - IP: \${l.ip}</div>\\\`).join('') || 'No data.';
             el.style.display='block';
         };
         const addLink = async () => {
@@ -297,7 +314,7 @@ const ADMIN_HTML = (domain, hasGoogle) => `
         const deleteLink = async (s) => {
             if(!confirm('Delete?')) return;
             await fetch('/api/links/'+s, { method:'DELETE' });
-            loadLinks(); showToast('Deleted');
+            await loadLinks(); showToast('Deleted');
         };
         const syncGitHub = async () => {
             showToast('Syncing...');
@@ -309,6 +326,10 @@ const ADMIN_HTML = (domain, hasGoogle) => `
             const r = await fetch('/api/config', { method:'POST', body:JSON.stringify({current_pass, admin_pass}) });
             const d = await r.json();
             if(d.success) showToast('Updated'); else showToast(d.error, 'error');
+        };
+        const saveConfig = async (data) => {
+            const res = await fetch('/api/config', { method: 'POST', body: JSON.stringify(data) });
+            if(res.ok) showToast('Config saved');
         };
         document.documentElement.setAttribute('data-theme', localStorage.getItem('theme')||'dark');
         loadLinks();
