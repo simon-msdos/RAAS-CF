@@ -14,11 +14,27 @@ A "pro" blueprint for managing short-links and installation scripts. Built for d
 *   **Portable:** One file, easy to deploy.
 
 ### ➔ Deployment
-1.  **Clone & Install:** \`npm install\`
-2.  **Create KV:** \`wrangler kv:namespace create REDIRECTS\`
-3.  **Update \`wrangler.toml\`:** Paste your KV ID and change the \`GITHUB_USER\`.
-4.  **Set Password:** \`wrangler secret put ADMIN_PASS\`
-5.  **Deploy:** \`wrangler deploy\`
+1.  **Clone & Install:** `npm install`
+2.  **Create KV:** `wrangler kv:namespace create REDIRECTS`
+3.  **Update \`wrangler.toml\`:** 
+    *   Paste your KV ID in the `[[kv_namespaces]]` section.
+    *   Set your custom domain in the `routes` section.
+    *   Update the `[vars]` with your GitHub username and site.
+4.  **Set Secrets (CRITICAL):**
+    ```bash
+    # Set your admin password for the /admin panel
+    wrangler secret put ADMIN_PASS
+
+    # Optional: Set your GitHub token for Auto-Sync
+    wrangler secret put GITHUB_TOKEN
+    ```
+5.  **Deploy:** `wrangler deploy`
+
+### ➔ Security Notes
+*   **Never commit your KV ID or secrets to GitHub.** The `wrangler.toml` in this repo uses placeholders.
+*   **Basic Auth:** The `/admin` and `/api` routes are protected by Basic Auth using `ADMIN_USER` and `ADMIN_PASS`.
+*   **Custom Domain:** Ensure your domain is managed by Cloudflare to use the `custom_domain = true` feature.
+
 
 ### ➔ Usage
 *   **Redirect:** \`sh.yourdomain.com/my-tool\`

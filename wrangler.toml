@@ -1,11 +1,14 @@
 name = "raas-cf"
 main = "src/index.js"
 compatibility_date = "2024-05-22"
+routes = [
+	{ pattern = "your-domain.com", custom_domain = true }
+]
 
 [vars]
-GITHUB_USER = "simon-msdos"
-BASE_DOMAIN = "sh.serghini.me"
-MAIN_SITE = "simon.serghini.me"
+GITHUB_USER = "your-github-username"
+BASE_DOMAIN = "your-domain.com"
+MAIN_SITE = "your-portfolio.com"
 ADMIN_USER = "admin"
 # GITHUB_TOKEN is required for Auto-Sync. Set it via 'wrangler secret put GITHUB_TOKEN'
 
