@@ -1,5 +1,7 @@
 # [ RAAS-CF ]
 
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simon-msdos/RAAS-CF)
+
 **Redirect-as-a-Service on Cloudflare Workers.**
 
 A "pro" blueprint for managing short-links and installation scripts. Built for developers who want a custom vanity domain for their \`curl | bash\` installers and deep control over their redirects.
