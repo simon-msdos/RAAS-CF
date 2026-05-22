@@ -3,6 +3,16 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.slice(1);
 
+    // --- SETUP WIZARD DETECTION ---
+    const isMissingKV = !env.REDIRECTS;
+    const isMissingSecrets = !env.ADMIN_PASS;
+
+    if (isMissingKV || isMissingSecrets) {
+      return new Response(SETUP_WIZARD_HTML(isMissingKV, isMissingSecrets), {
+        headers: { 'Content-Type': 'text/html' }
+      });
+    }
+
     const getAuth = async () => {
       const user = await env.REDIRECTS.get('__ADMIN_USER') || env.ADMIN_USER;
       const pass = await env.REDIRECTS.get('__ADMIN_PASS') || env.ADMIN_PASS;
@@ -98,6 +108,64 @@ export default {
     return Response.redirect(target, 302);
   }
 };
+
+const SETUP_WIZARD_HTML = (missingKV, missingSecrets) => `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setup Required | RAAS-CF</title>
+    <style>
+        body { background: #0a0a0a; color: #00ff41; font-family: 'Courier New', Courier, monospace; padding: 40px; line-height: 1.6; }
+        .container { max-width: 800px; margin: 0 auto; border: 1px solid #00ff41; padding: 30px; box-shadow: 0 0 20px rgba(0, 255, 65, 0.3); }
+        h1 { border-bottom: 2px solid #00ff41; padding-bottom: 10px; text-transform: uppercase; }
+        .step { margin-bottom: 30px; padding: 20px; background: #111; border-left: 5px solid #00ff41; }
+        .status { font-weight: bold; color: #ff4141; }
+        .done { color: #00ff41; }
+        code { background: #222; padding: 2px 6px; border-radius: 4px; }
+        a { color: #008cff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>[ RAAS-CF SETUP WIZARD ]</h1>
+        <p>Deployment successful, but final configuration is required.</p>
+
+        <div class="step">
+            <h3>Step 1: Cloudflare KV Storage</h3>
+            <p>Status: ${missingKV ? '<span class="status">MISSING BINDING</span>' : '<span class="done">CONNECTED</span>'}</p>
+            <p><b>Instructions:</b></p>
+            <ol>
+                <li>Go to <b>Workers & Pages > KV</b> in your Cloudflare Dashboard.</li>
+                <li>Click <b>Create Namespace</b> and name it <code>REDIRECTS</code>.</li>
+                <li>Go to your <b>raas-cf</b> worker settings > <b>Settings > Variables</b>.</li>
+                <li>Under <b>KV Namespace Bindings</b>, click <b>Add Binding</b>.</li>
+                <li>Variable name: <code>REDIRECTS</code>, KV Namespace: <code>REDIRECTS</code>.</li>
+            </ol>
+        </div>
+
+        <div class="step">
+            <h3>Step 2: Admin Password</h3>
+            <p>Status: ${missingSecrets ? '<span class="status">MISSING SECRET</span>' : '<span class="done">SET</span>'}</p>
+            <p><b>Instructions:</b></p>
+            <ol>
+                <li>Go to your <b>raas-cf</b> worker settings > <b>Settings > Variables</b>.</li>
+                <li>Under <b>Environment Variables</b>, click <b>Add Secret</b>.</li>
+                <li>Name: <code>ADMIN_PASS</code>, Value: [Your Password].</li>
+            </ol>
+        </div>
+
+        <div class="step">
+            <h3>Step 3: Refresh</h3>
+            <p>Once you've added the binding and the secret, <b>Redeploy</b> the worker or wait 60 seconds and refresh this page.</p>
+            <button onclick="location.reload()" style="background:#00ff41; color:#000; border:none; padding:10px 20px; cursor:pointer; font-weight:bold;">I'VE DONE IT, REFRESH</button>
+        </div>
+    </div>
+</body>
+</html>
+`;
 
 const ADMIN_HTML = (domain) => `
 <!DOCTYPE html>
