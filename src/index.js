@@ -35,11 +35,15 @@ export default {
 
       if (url.pathname === '/api/links' && request.method === 'GET') {
         const list = await env.REDIRECTS.list();
-        const links = await Promise.all(list.keys.filter(k => !k.name.startsWith('__')).map(async k => ({
+        const manual = await Promise.all(list.keys.filter(k => !k.name.startsWith('__')).map(async k => ({
           slug: k.name,
           url: await env.REDIRECTS.get(k.name)
         })));
-        return Response.json(links);
+        
+        const gitMapRaw = await env.REDIRECTS.get('__github_map');
+        const auto = gitMapRaw ? JSON.parse(gitMapRaw) : {};
+        
+        return Response.json({ manual, auto });
       }
 
       if (url.pathname === '/api/links' && request.method === 'POST') {
@@ -75,7 +79,6 @@ export default {
           const repos = await reposResponse.json();
           const map = {};
 
-          // Optimized Parallel Discovery
           await Promise.all(repos.map(async (repo) => {
             try {
               const contentsResponse = await fetch(`https://api.github.com/repos/${repo.full_name}/contents`, {
@@ -86,7 +89,7 @@ export default {
                 const shFile = contents.find(f => f.name.endsWith('.sh'));
                 if (shFile) map[repo.name] = shFile.download_url;
               }
-            } catch (e) { /* skip individual repo failures */ }
+            } catch (e) { }
           }));
 
           await env.REDIRECTS.put('__github_map', JSON.stringify(map));
@@ -160,10 +163,10 @@ const ADMIN_HTML = (domain) => `
     <title>RAAS Admin | ${domain}</title>
     <style>
         :root[data-theme="light"] {
-            --bg: #f9fafb; --card: #ffffff; --text: #111827; --text-muted: #6b7280; --border: #e5e7eb; --primary: #2563eb; --primary-hover: #1d4ed8; --danger: #ef4444;
+            --bg: #f9fafb; --card: #ffffff; --text: #111827; --text-muted: #6b7280; --border: #e5e7eb; --primary: #2563eb; --primary-hover: #1d4ed8; --danger: #ef4444; --git: #059669;
         }
         :root[data-theme="dark"] {
-            --bg: #111827; --card: #1f2937; --text: #f9fafb; --text-muted: #9ca3af; --border: #374151; --primary: #3b82f6; --primary-hover: #60a5fa; --danger: #f87171;
+            --bg: #111827; --card: #1f2937; --text: #f9fafb; --text-muted: #9ca3af; --border: #374151; --primary: #3b82f6; --primary-hover: #60a5fa; --danger: #f87171; --git: #10b981;
         }
         body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; transition: background 0.2s; }
         .navbar { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 10; }
@@ -172,16 +175,14 @@ const ADMIN_HTML = (domain) => `
         h1, h2, h3 { margin-top: 0; }
         .btn { padding: 10px 16px; border-radius: 8px; border: none; font-weight: 500; cursor: pointer; transition: all 0.2s; font-size: 14px; }
         .btn-primary { background: var(--primary); color: white; }
-        .btn-primary:hover { opacity: 0.9; }
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
         .btn-danger { background: var(--danger); color: white; }
         input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px 14px; border-radius: 8px; font-size: 14px; width: 100%; box-sizing: border-box; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
         .flex { display: flex; gap: 12px; align-items: flex-end; }
         .link-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); }
-        .link-row:last-child { border-bottom: none; }
-        .badge { background: var(--border); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-        #toast { position: fixed; bottom: 24px; right: 24px; padding: 16px 24px; border-radius: 8px; color: white; font-weight: 500; transform: translateY(100px); transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28); z-index: 100; }
+        .badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--border); color: var(--text-muted); font-weight: bold; text-transform: uppercase; }
+        .badge-git { background: rgba(16, 185, 129, 0.1); color: var(--git); border: 1px solid var(--git); }
+        #toast { position: fixed; bottom: 24px; right: 24px; padding: 16px 24px; border-radius: 8px; color: white; font-weight: 500; transform: translateY(100px); transition: transform 0.3s; z-index: 100; }
         #toast.show { transform: translateY(0); }
         .loader { width: 16px; height: 16px; border: 2px solid #FFF; border-bottom-color: transparent; border-radius: 50%; display: inline-block; animation: rotation 1s linear infinite; margin-right: 8px; }
         @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -197,61 +198,56 @@ const ADMIN_HTML = (domain) => `
     </div>
 
     <div class="container">
-        <div class="grid">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px;">
             <div class="card">
                 <h3>Quick Link</h3>
-                <div class="flex">
-                    <div style="flex:1">
-                        <label style="font-size: 12px; color: var(--text-muted);">Slug</label>
-                        <input id="slug" placeholder="e.g. autocut">
-                    </div>
+                <div style="margin-bottom: 12px;">
+                    <label style="font-size: 12px; color: var(--text-muted);">Slug</label>
+                    <input id="slug" placeholder="e.g. autocut">
                 </div>
-                <div class="flex" style="margin-top: 12px;">
-                    <div style="flex:1">
-                        <label style="font-size: 12px; color: var(--text-muted);">Target URL</label>
-                        <input id="target" placeholder="https://raw.githubusercontent.com/...">
+                <div>
+                    <label style="font-size: 12px; color: var(--text-muted);">Target URL</label>
+                    <div class="flex">
+                        <input id="target" placeholder="https://...">
+                        <button class="btn btn-primary" onclick="addLink()">Create</button>
                     </div>
-                    <button class="btn btn-primary" onclick="addLink()">Create</button>
                 </div>
             </div>
 
             <div class="card">
                 <h3>Settings</h3>
-                <div>
-                    <label style="font-size: 12px; color: var(--text-muted);">GitHub Token</label>
-                    <div class="flex">
-                        <input id="github_token" type="password" placeholder="••••••••••••••••">
-                        <button class="btn btn-outline" onclick="saveConfig('github_token')">Save</button>
+                <div class="flex">
+                    <div style="flex:1">
+                        <label style="font-size: 12px; color: var(--text-muted);">GitHub Token</label>
+                        <input id="github_token" type="password" placeholder="••••••••">
                     </div>
-                    <p style="font-size: 11px; margin-top: 4px;"><a href="https://github.com/settings/tokens/new?description=RAAS-CF&scopes=repo,read:user" target="_blank">Generate Token →</a></p>
+                    <button class="btn btn-outline" onclick="saveConfig('github_token')">Save</button>
                 </div>
-                <div style="margin-top: 16px;">
-                    <label style="font-size: 12px; color: var(--text-muted);">Admin Password</label>
-                    <div class="flex">
+                <div class="flex" style="margin-top: 12px;">
+                    <div style="flex:1">
+                        <label style="font-size: 12px; color: var(--text-muted);">Admin Password</label>
                         <input id="admin_pass" type="password" placeholder="New Password">
-                        <button class="btn btn-outline" onclick="saveConfig('admin_pass')">Update</button>
                     </div>
+                    <button class="btn btn-outline" onclick="saveConfig('admin_pass')">Update</button>
                 </div>
             </div>
         </div>
 
         <div class="card" style="margin-top: 24px;">
-            <h3>Active Redirects</h3>
-            <div id="link-list">
-                <p style="color: var(--text-muted);">Loading links...</p>
-            </div>
+            <h3 id="list-title">Active Redirects</h3>
+            <div id="link-list"></div>
         </div>
     </div>
 
     <div id="toast"></div>
 
     <script>
-        const toast = document.getElementById('toast');
         const showToast = (msg, type = 'success') => {
-            toast.innerText = msg;
-            toast.style.background = type === 'success' ? '#059669' : '#dc2626';
-            toast.classList.add('show');
-            setTimeout(() => toast.classList.remove('show'), 3000);
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.style.background = type === 'success' ? '#059669' : '#dc2626';
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 3000);
         };
 
         const toggleTheme = () => {
@@ -262,74 +258,80 @@ const ADMIN_HTML = (domain) => `
             localStorage.setItem('theme', target);
         };
 
-        const syncGitHub = async () => {
-            const btn = document.getElementById('sync-btn');
-            const originalText = btn.innerHTML;
-            btn.innerHTML = '<span class="loader"></span>Syncing...';
-            btn.disabled = true;
-
-            try {
-                const r = await fetch('/api/sync', { method: 'POST' });
-                const data = await r.json();
-                if (data.success) {
-                    showToast(\`Synced \${data.count} scripts from GitHub.\`);
-                    loadLinks();
-                } else {
-                    showToast(data.error || 'Sync failed', 'error');
-                }
-            } catch (e) {
-                showToast('Network error during sync', 'error');
-            } finally {
-                btn.innerHTML = originalText;
-                btn.disabled = false;
-            }
-        };
-
-        const saveConfig = async (key) => {
-            const val = document.getElementById(key).value;
-            if(!val) return;
-            const res = await fetch('/api/config', { method: 'POST', body: JSON.stringify({ [key]: val }) });
-            if(res.ok) {
-                showToast('Setting saved successfully');
-                document.getElementById(key).value = '';
-            } else showToast('Failed to save setting', 'error');
-        };
-
         const loadLinks = async () => {
             const res = await fetch('/api/links');
             const data = await res.json();
             const container = document.getElementById('link-list');
-            container.innerHTML = data.map(l => \`
-                <div class="link-row">
-                    <div>
-                        <span style="font-weight: 500;">/\${l.slug}</span>
-                        <div style="font-size: 11px; color: var(--text-muted); word-break: break-all;">\${l.url}</div>
-                    </div>
-                    <button class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;" onclick="deleteLink('\${l.slug}')">Delete</button>
-                </div>
-            \`).join('') || '<p style="text-align:center; padding: 20px; color: var(--text-muted);">No manual redirects found.</p>';
+            
+            let html = '';
+            
+            // Manual Links
+            data.manual.forEach(l => {
+                html += \`
+                    <div class="link-row">
+                        <div>
+                            <span class="badge">Manual</span> <span style="font-weight: 500;">/\${l.slug}</span>
+                            <div style="font-size: 11px; color: var(--text-muted);">\${l.url}</div>
+                        </div>
+                        <button class="btn btn-danger" style="padding: 4px 10px; font-size: 11px;" onclick="deleteLink('\${l.slug}')">Delete</button>
+                    </div>\`;
+            });
+
+            // Auto Links
+            Object.entries(data.auto).forEach(([slug, url]) => {
+                html += \`
+                    <div class="link-row">
+                        <div>
+                            <span class="badge badge-git">GitHub</span> <span style="font-weight: 500;">/\${slug}</span>
+                            <div style="font-size: 11px; color: var(--text-muted);">\${url}</div>
+                        </div>
+                        <span style="font-size: 11px; color: var(--git); font-weight: 500;">Auto-Managed</span>
+                    </div>\`;
+            });
+
+            container.innerHTML = html || '<p style="text-align:center; padding: 20px; color: var(--text-muted);">No redirects found. Use the form or Sync GitHub.</p>';
+            document.getElementById('list-title').innerText = \`Active Redirects (\${data.manual.length + Object.keys(data.auto).length})\`;
+        };
+
+        const syncGitHub = async () => {
+            const btn = document.getElementById('sync-btn');
+            btn.innerHTML = '<span class="loader"></span>Syncing...';
+            btn.disabled = true;
+            try {
+                const r = await fetch('/api/sync', { method: 'POST' });
+                const d = await r.json();
+                if(d.success) {
+                    showToast(\`Found \${d.count} scripts.\`);
+                    loadLinks();
+                } else showToast(d.error, 'error');
+            } catch(e) { showToast('Sync failed', 'error'); }
+            btn.innerHTML = 'Sync GitHub';
+            btn.disabled = false;
+        };
+
+        const saveConfig = async (key) => {
+            const val = document.getElementById(key).value;
+            await fetch('/api/config', { method: 'POST', body: JSON.stringify({ [key]: val }) });
+            showToast('Saved');
+            document.getElementById(key).value = '';
         };
 
         const addLink = async () => {
             const slug = document.getElementById('slug').value;
             const target = document.getElementById('target').value;
-            if(!slug || !target) return showToast('Please fill all fields', 'error');
-            const res = await fetch('/api/links', { method: 'POST', body: JSON.stringify({ slug, target }) });
-            if(res.ok) {
-                showToast('Link created');
-                document.getElementById('slug').value = '';
-                document.getElementById('target').value = '';
-                loadLinks();
-            }
+            await fetch('/api/links', { method: 'POST', body: JSON.stringify({ slug, target }) });
+            document.getElementById('slug').value = '';
+            document.getElementById('target').value = '';
+            loadLinks();
+            showToast('Link created');
         };
 
         const deleteLink = async (slug) => {
-            if(!confirm(\`Delete /\${slug}?\`)) return;
-            await fetch(\`/api/links/\${slug}\`, { method: 'DELETE' });
+            if(!confirm('Delete?')) return;
+            await fetch('/api/links/' + slug, { method: 'DELETE' });
             loadLinks();
         };
 
-        // Init
         const savedTheme = localStorage.getItem('theme') || 'dark';
         document.documentElement.setAttribute('data-theme', savedTheme);
         document.getElementById('theme-toggle').innerText = savedTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
