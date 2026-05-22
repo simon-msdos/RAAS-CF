@@ -3,7 +3,6 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.slice(1);
 
-    // --- SETUP WIZARD DETECTION ---
     const isMissingKV = !env.REDIRECTS;
     const isMissingSecrets = !env.ADMIN_PASS;
 
@@ -64,26 +63,37 @@ export default {
 
       if (url.pathname === '/api/sync' && request.method === 'POST') {
         const token = await env.REDIRECTS.get('__GITHUB_TOKEN') || env.GITHUB_TOKEN;
-        if (!token) return Response.json({ success: false, error: 'No token' }, { status: 400 });
+        if (!token) return Response.json({ success: false, error: 'No token configured.' }, { status: 400 });
         
-        const reposResponse = await fetch(`https://api.github.com/user/repos?per_page=100`, {
-          headers: { 'Authorization': `token ${token}`, 'User-Agent': 'RAAS-CF-Worker' }
-        });
-        const repos = await reposResponse.json();
-        const map = {};
-
-        for (const repo of repos) {
-          const contentsResponse = await fetch(`https://api.github.com/repos/${repo.full_name}/contents`, {
+        try {
+          const reposResponse = await fetch(`https://api.github.com/user/repos?per_page=100&type=owner`, {
             headers: { 'Authorization': `token ${token}`, 'User-Agent': 'RAAS-CF-Worker' }
           });
-          if (contentsResponse.ok) {
-            const contents = await contentsResponse.json();
-            const shFile = contents.find(f => f.name.endsWith('.sh'));
-            if (shFile) map[repo.name] = shFile.download_url;
-          }
+          
+          if (!reposResponse.ok) throw new Error(`GitHub API Error: ${reposResponse.statusText}`);
+          
+          const repos = await reposResponse.json();
+          const map = {};
+
+          // Optimized Parallel Discovery
+          await Promise.all(repos.map(async (repo) => {
+            try {
+              const contentsResponse = await fetch(`https://api.github.com/repos/${repo.full_name}/contents`, {
+                headers: { 'Authorization': `token ${token}`, 'User-Agent': 'RAAS-CF-Worker' }
+              });
+              if (contentsResponse.ok) {
+                const contents = await contentsResponse.json();
+                const shFile = contents.find(f => f.name.endsWith('.sh'));
+                if (shFile) map[repo.name] = shFile.download_url;
+              }
+            } catch (e) { /* skip individual repo failures */ }
+          }));
+
+          await env.REDIRECTS.put('__github_map', JSON.stringify(map));
+          return Response.json({ success: true, count: Object.keys(map).length });
+        } catch (err) {
+          return Response.json({ success: false, error: err.message }, { status: 500 });
         }
-        await env.REDIRECTS.put('__github_map', JSON.stringify(map));
-        return Response.json({ success: true, count: Object.keys(map).length });
       }
 
       if (path === 'admin') {
@@ -117,51 +127,25 @@ const SETUP_WIZARD_HTML = (missingKV, missingSecrets) => `
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Setup Required | RAAS-CF</title>
     <style>
-        body { background: #0a0a0a; color: #00ff41; font-family: 'Courier New', Courier, monospace; padding: 40px; line-height: 1.6; }
-        .container { max-width: 800px; margin: 0 auto; border: 1px solid #00ff41; padding: 30px; box-shadow: 0 0 20px rgba(0, 255, 65, 0.3); }
-        h1 { border-bottom: 2px solid #00ff41; padding-bottom: 10px; text-transform: uppercase; }
-        .step { margin-bottom: 30px; padding: 20px; background: #111; border-left: 5px solid #00ff41; }
-        .status { font-weight: bold; color: #ff4141; }
-        .done { color: #00ff41; }
-        code { background: #222; padding: 2px 6px; border-radius: 4px; }
-        a { color: #008cff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
+        :root { --bg: #f3f4f6; --text: #111827; --card: #ffffff; --primary: #2563eb; --accent: #dc2626; }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; padding: 40px; }
+        .container { max-width: 600px; margin: 0 auto; background: var(--card); padding: 32px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        .step { margin-top: 24px; padding: 16px; border: 1px solid #e5e7eb; border-radius: 8px; }
+        .status { font-weight: bold; color: var(--accent); }
+        .done { color: #059669; }
+        button { background: var(--primary); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: 500; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>[ RAAS-CF SETUP WIZARD ]</h1>
-        <p>Deployment successful, but final configuration is required.</p>
-
+        <h1>Setup Required</h1>
+        <p>Deployment successful, but final configuration is needed.</p>
         <div class="step">
-            <h3>Step 1: Cloudflare KV Storage</h3>
-            <p>Status: ${missingKV ? '<span class="status">MISSING BINDING</span>' : '<span class="done">CONNECTED</span>'}</p>
-            <p><b>Instructions:</b></p>
-            <ol>
-                <li>Go to <b>Workers & Pages > KV</b> in your Cloudflare Dashboard.</li>
-                <li>Click <b>Create Namespace</b> and name it <code>REDIRECTS</code>.</li>
-                <li>Go to your <b>raas-cf</b> worker settings > <b>Settings > Variables</b>.</li>
-                <li>Under <b>KV Namespace Bindings</b>, click <b>Add Binding</b>.</li>
-                <li>Variable name: <code>REDIRECTS</code>, KV Namespace: <code>REDIRECTS</code>.</li>
-            </ol>
+            <p>KV Storage: ${missingKV ? '<span class="status">MISSING</span>' : '<span class="done">OK</span>'}</p>
+            <p>Admin Secret: ${missingSecrets ? '<span class="status">MISSING</span>' : '<span class="done">OK</span>'}</p>
         </div>
-
-        <div class="step">
-            <h3>Step 2: Admin Password</h3>
-            <p>Status: ${missingSecrets ? '<span class="status">MISSING SECRET</span>' : '<span class="done">SET</span>'}</p>
-            <p><b>Instructions:</b></p>
-            <ol>
-                <li>Go to your <b>raas-cf</b> worker settings > <b>Settings > Variables</b>.</li>
-                <li>Under <b>Environment Variables</b>, click <b>Add Secret</b>.</li>
-                <li>Name: <code>ADMIN_PASS</code>, Value: [Your Password].</li>
-            </ol>
-        </div>
-
-        <div class="step">
-            <h3>Step 3: Refresh</h3>
-            <p>Once you've added the binding and the secret, <b>Redeploy</b> the worker or wait 60 seconds and refresh this page.</p>
-            <button onclick="location.reload()" style="background:#00ff41; color:#000; border:none; padding:10px 20px; cursor:pointer; font-weight:bold;">I'VE DONE IT, REFRESH</button>
-        </div>
+        <div style="margin-top: 24px;"><button onclick="location.reload()">Refresh Page</button></div>
     </div>
 </body>
 </html>
@@ -169,108 +153,187 @@ const SETUP_WIZARD_HTML = (missingKV, missingSecrets) => `
 
 const ADMIN_HTML = (domain) => `
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin | ${domain}</title>
+    <title>RAAS Admin | ${domain}</title>
     <style>
-        body { background: #0a0a0a; color: #00ff41; font-family: 'Courier New', Courier, monospace; padding: 20px; line-height: 1.6; }
-        .container { max-width: 900px; margin: 0 auto; border: 1px solid #00ff41; padding: 20px; box-shadow: 0 0 15px rgba(0, 255, 65, 0.2); }
-        h1 { border-bottom: 1px solid #00ff41; padding-bottom: 10px; text-transform: uppercase; letter-spacing: 2px; }
-        .section { margin-top: 30px; border-top: 1px solid #333; padding-top: 20px; }
-        input { background: #1a1a1a; border: 1px solid #00ff41; color: #00ff41; padding: 8px; margin-bottom: 10px; width: 250px; display: inline-block; }
-        button { background: #00ff41; color: #000; border: none; padding: 8px 20px; cursor: pointer; font-weight: bold; text-transform: uppercase; }
-        button:hover { background: #00cc33; }
-        .btn-blue { background: #008cff; color: white; }
-        .btn-red { background: #ff4141; color: white; }
-        .link-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #333; }
-        .wizard-box { background: #111; padding: 15px; border-left: 4px solid #008cff; margin-bottom: 20px; }
+        :root[data-theme="light"] {
+            --bg: #f9fafb; --card: #ffffff; --text: #111827; --text-muted: #6b7280; --border: #e5e7eb; --primary: #2563eb; --primary-hover: #1d4ed8; --danger: #ef4444;
+        }
+        :root[data-theme="dark"] {
+            --bg: #111827; --card: #1f2937; --text: #f9fafb; --text-muted: #9ca3af; --border: #374151; --primary: #3b82f6; --primary-hover: #60a5fa; --danger: #f87171;
+        }
+        body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; transition: background 0.2s; }
+        .navbar { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 10; }
+        .container { max-width: 1000px; margin: 32px auto; padding: 0 20px; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+        h1, h2, h3 { margin-top: 0; }
+        .btn { padding: 10px 16px; border-radius: 8px; border: none; font-weight: 500; cursor: pointer; transition: all 0.2s; font-size: 14px; }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-primary:hover { opacity: 0.9; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+        .btn-danger { background: var(--danger); color: white; }
+        input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px 14px; border-radius: 8px; font-size: 14px; width: 100%; box-sizing: border-box; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+        .flex { display: flex; gap: 12px; align-items: flex-end; }
+        .link-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); }
+        .link-row:last-child { border-bottom: none; }
+        .badge { background: var(--border); padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        #toast { position: fixed; bottom: 24px; right: 24px; padding: 16px 24px; border-radius: 8px; color: white; font-weight: 500; transform: translateY(100px); transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28); z-index: 100; }
+        #toast.show { transform: translateY(0); }
+        .loader { width: 16px; height: 16px; border: 2px solid #FFF; border-bottom-color: transparent; border-radius: 50%; display: inline-block; animation: rotation 1s linear infinite; margin-right: 8px; }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
+    <div class="navbar">
+        <div style="font-weight: bold; font-size: 20px;">RAAS <span style="font-weight: normal; opacity: 0.7;">Console</span></div>
+        <div style="display: flex; gap: 16px;">
+            <button class="btn btn-outline" onclick="toggleTheme()" id="theme-toggle">🌙 Dark Mode</button>
+            <button class="btn btn-primary" id="sync-btn" onclick="syncGitHub()">Sync GitHub</button>
+        </div>
+    </div>
+
     <div class="container">
-        <h1>[ RAAS-CF Admin Console ]</h1>
-        
-        <div class="section">
-            <h3>Step 1: GitHub Discovery Wizard</h3>
-            <div class="wizard-box">
-                <p>To enable Auto-Sync, generate a token with <b>'repo'</b> and <b>'read:user'</b> scopes.</p>
-                <a href="https://github.com/settings/tokens/new?description=RAAS-CF-AutoSync&scopes=repo,read:user" target="_blank">
-                    <button class="btn-blue">1. Generate Token on GitHub</button>
-                </a>
-                <div style="margin-top: 15px;">
-                    <input id="github_token" type="password" placeholder="2. Paste Token Here">
-                    <button onclick="saveConfig({github_token: document.getElementById('github_token').value})">Save Token</button>
+        <div class="grid">
+            <div class="card">
+                <h3>Quick Link</h3>
+                <div class="flex">
+                    <div style="flex:1">
+                        <label style="font-size: 12px; color: var(--text-muted);">Slug</label>
+                        <input id="slug" placeholder="e.g. autocut">
+                    </div>
+                </div>
+                <div class="flex" style="margin-top: 12px;">
+                    <div style="flex:1">
+                        <label style="font-size: 12px; color: var(--text-muted);">Target URL</label>
+                        <input id="target" placeholder="https://raw.githubusercontent.com/...">
+                    </div>
+                    <button class="btn btn-primary" onclick="addLink()">Create</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>Settings</h3>
+                <div>
+                    <label style="font-size: 12px; color: var(--text-muted);">GitHub Token</label>
+                    <div class="flex">
+                        <input id="github_token" type="password" placeholder="••••••••••••••••">
+                        <button class="btn btn-outline" onclick="saveConfig('github_token')">Save</button>
+                    </div>
+                    <p style="font-size: 11px; margin-top: 4px;"><a href="https://github.com/settings/tokens/new?description=RAAS-CF&scopes=repo,read:user" target="_blank">Generate Token →</a></p>
+                </div>
+                <div style="margin-top: 16px;">
+                    <label style="font-size: 12px; color: var(--text-muted);">Admin Password</label>
+                    <div class="flex">
+                        <input id="admin_pass" type="password" placeholder="New Password">
+                        <button class="btn btn-outline" onclick="saveConfig('admin_pass')">Update</button>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <div class="section">
-            <h3>Step 2: Security</h3>
-            <input id="new_pass" type="password" placeholder="New Admin Password">
-            <button onclick="saveConfig({admin_pass: document.getElementById('new_pass').value})">Update Password</button>
-            <p style="font-size: 11px; color: #888;">* Refresh page after update. Default login: admin / [your secret]</p>
-        </div>
-
-        <div class="section">
-            <h3>Step 3: Redirect Management</h3>
-            <input id="slug" placeholder="SLUG (e.g. autocut)">
-            <input id="target" placeholder="TARGET URL" style="width: 350px;">
-            <button onclick="addLink()">CREATE LINK</button>
-            <button class="btn-blue" onclick="syncGitHub()" style="float: right;">GITHUB SYNC</button>
-            
-            <div class="link-list" id="link-list" style="margin-top: 20px;">
-                <div>Loading active redirects...</div>
+        <div class="card" style="margin-top: 24px;">
+            <h3>Active Redirects</h3>
+            <div id="link-list">
+                <p style="color: var(--text-muted);">Loading links...</p>
             </div>
         </div>
     </div>
 
+    <div id="toast"></div>
+
     <script>
-        async function fetchLinks() {
-            const r = await fetch('/api/links');
-            const links = await r.json();
+        const toast = document.getElementById('toast');
+        const showToast = (msg, type = 'success') => {
+            toast.innerText = msg;
+            toast.style.background = type === 'success' ? '#059669' : '#dc2626';
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        };
+
+        const toggleTheme = () => {
+            const current = document.documentElement.getAttribute('data-theme');
+            const target = current === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', target);
+            document.getElementById('theme-toggle').innerText = target === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
+            localStorage.setItem('theme', target);
+        };
+
+        const syncGitHub = async () => {
+            const btn = document.getElementById('sync-btn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<span class="loader"></span>Syncing...';
+            btn.disabled = true;
+
+            try {
+                const r = await fetch('/api/sync', { method: 'POST' });
+                const data = await r.json();
+                if (data.success) {
+                    showToast(\`Synced \${data.count} scripts from GitHub.\`);
+                    loadLinks();
+                } else {
+                    showToast(data.error || 'Sync failed', 'error');
+                }
+            } catch (e) {
+                showToast('Network error during sync', 'error');
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        };
+
+        const saveConfig = async (key) => {
+            const val = document.getElementById(key).value;
+            if(!val) return;
+            const res = await fetch('/api/config', { method: 'POST', body: JSON.stringify({ [key]: val }) });
+            if(res.ok) {
+                showToast('Setting saved successfully');
+                document.getElementById(key).value = '';
+            } else showToast('Failed to save setting', 'error');
+        };
+
+        const loadLinks = async () => {
+            const res = await fetch('/api/links');
+            const data = await res.json();
             const container = document.getElementById('link-list');
-            container.innerHTML = links.map(l => \`
-                <div class="link-item">
-                    <span><strong>/\${l.slug}</strong> → \${l.url}</span>
-                    <button class="btn-red" onclick="deleteLink('\${l.slug}')">DEL</button>
+            container.innerHTML = data.map(l => \`
+                <div class="link-row">
+                    <div>
+                        <span style="font-weight: 500;">/\${l.slug}</span>
+                        <div style="font-size: 11px; color: var(--text-muted); word-break: break-all;">\${l.url}</div>
+                    </div>
+                    <button class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;" onclick="deleteLink('\${l.slug}')">Delete</button>
                 </div>
-            \`).join('') || 'No manual redirects found.';
-        }
+            \`).join('') || '<p style="text-align:center; padding: 20px; color: var(--text-muted);">No manual redirects found.</p>';
+        };
 
-        async function saveConfig(data) {
-            const r = await fetch('/api/config', { method: 'POST', body: JSON.stringify(data) });
-            if(r.ok) alert('Configuration Updated!');
-        }
-
-        async function addLink() {
+        const addLink = async () => {
             const slug = document.getElementById('slug').value;
             const target = document.getElementById('target').value;
-            if(!slug || !target) return;
-            await fetch('/api/links', { method: 'POST', body: JSON.stringify({ slug, target }) });
-            document.getElementById('slug').value = '';
-            document.getElementById('target').value = '';
-            fetchLinks();
-        }
+            if(!slug || !target) return showToast('Please fill all fields', 'error');
+            const res = await fetch('/api/links', { method: 'POST', body: JSON.stringify({ slug, target }) });
+            if(res.ok) {
+                showToast('Link created');
+                document.getElementById('slug').value = '';
+                document.getElementById('target').value = '';
+                loadLinks();
+            }
+        };
 
-        async function syncGitHub() {
-            const btn = document.querySelector('.btn-blue[onclick="syncGitHub()"]');
-            btn.innerText = 'SYNCING...';
-            const r = await fetch('/api/sync', { method: 'POST' });
-            const data = await r.json();
-            if(data.success) alert('Synced ' + data.count + ' scripts from GitHub!');
-            else alert('Sync failed: ' + data.error);
-            btn.innerText = 'GITHUB SYNC';
-        }
+        const deleteLink = async (slug) => {
+            if(!confirm(\`Delete /\${slug}?\`)) return;
+            await fetch(\`/api/links/\${slug}\`, { method: 'DELETE' });
+            loadLinks();
+        };
 
-        async function deleteLink(slug) {
-            if(!confirm('Delete ' + slug + '?')) return;
-            await fetch('/api/links/' + slug, { method: 'DELETE' });
-            fetchLinks();
-        }
-
-        fetchLinks();
+        // Init
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        document.getElementById('theme-toggle').innerText = savedTheme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode';
+        loadLinks();
     </script>
 </body>
 </html>
