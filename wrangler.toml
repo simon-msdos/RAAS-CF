@@ -7,6 +7,7 @@ GITHUB_USER = "simon-msdos"
 BASE_DOMAIN = "sh.serghini.me"
 MAIN_SITE = "simon.serghini.me"
 ADMIN_USER = "admin"
+# GITHUB_TOKEN is required for Auto-Sync. Set it via 'wrangler secret put GITHUB_TOKEN'
 
 [[kv_namespaces]]
 binding = "REDIRECTS"
