@@ -163,28 +163,31 @@ const ADMIN_HTML = (domain) => `
     <title>RAAS Admin | ${domain}</title>
     <style>
         :root[data-theme="light"] {
-            --bg: #f9fafb; --card: #ffffff; --text: #111827; --text-muted: #6b7280; --border: #e5e7eb; --primary: #2563eb; --primary-hover: #1d4ed8; --danger: #ef4444; --git: #059669;
+            --bg: #f9fafb; --card: #ffffff; --text: #111827; --text-muted: #6b7280; --border: #e5e7eb; --primary: #2563eb; --primary-hover: #1d4ed8; --danger: #ef4444; --git: #059669; --code: #f1f5f9; --code-text: #1e293b;
         }
         :root[data-theme="dark"] {
-            --bg: #111827; --card: #1f2937; --text: #f9fafb; --text-muted: #9ca3af; --border: #374151; --primary: #3b82f6; --primary-hover: #60a5fa; --danger: #f87171; --git: #10b981;
+            --bg: #111827; --card: #1f2937; --text: #f9fafb; --text-muted: #9ca3af; --border: #374151; --primary: #3b82f6; --primary-hover: #60a5fa; --danger: #f87171; --git: #10b981; --code: #111827; --code-text: #f1f5f9;
         }
         body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; transition: background 0.2s; }
         .navbar { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 10; }
-        .container { max-width: 1000px; margin: 32px auto; padding: 0 20px; }
+        .container { max-width: 1100px; margin: 32px auto; padding: 0 20px; }
         .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
         h1, h2, h3 { margin-top: 0; }
-        .btn { padding: 10px 16px; border-radius: 8px; border: none; font-weight: 500; cursor: pointer; transition: all 0.2s; font-size: 14px; }
+        .btn { padding: 10px 16px; border-radius: 8px; border: none; font-weight: 500; cursor: pointer; transition: all 0.2s; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; }
         .btn-primary { background: var(--primary); color: white; }
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
         .btn-danger { background: var(--danger); color: white; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
         input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px 14px; border-radius: 8px; font-size: 14px; width: 100%; box-sizing: border-box; }
         .flex { display: flex; gap: 12px; align-items: flex-end; }
-        .link-row { display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); }
+        .link-row { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; align-items: center; padding: 16px; border-bottom: 1px solid var(--border); }
+        .link-row:last-child { border-bottom: none; }
         .badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--border); color: var(--text-muted); font-weight: bold; text-transform: uppercase; }
         .badge-git { background: rgba(16, 185, 129, 0.1); color: var(--git); border: 1px solid var(--git); }
+        .curl-box { background: var(--code); color: var(--code-text); padding: 8px 12px; border-radius: 6px; font-family: monospace; font-size: 12px; border: 1px solid var(--border); overflow-x: auto; white-space: nowrap; max-width: 400px; }
         #toast { position: fixed; bottom: 24px; right: 24px; padding: 16px 24px; border-radius: 8px; color: white; font-weight: 500; transform: translateY(100px); transition: transform 0.3s; z-index: 100; }
         #toast.show { transform: translateY(0); }
-        .loader { width: 16px; height: 16px; border: 2px solid #FFF; border-bottom-color: transparent; border-radius: 50%; display: inline-block; animation: rotation 1s linear infinite; margin-right: 8px; }
+        .loader { width: 16px; height: 16px; border: 2px solid #FFF; border-bottom-color: transparent; border-radius: 50%; display: inline-block; animation: rotation 1s linear infinite; }
         @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
@@ -198,7 +201,7 @@ const ADMIN_HTML = (domain) => `
     </div>
 
     <div class="container">
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 24px;">
             <div class="card">
                 <h3>Quick Link</h3>
                 <div style="margin-bottom: 12px;">
@@ -242,6 +245,7 @@ const ADMIN_HTML = (domain) => `
     <div id="toast"></div>
 
     <script>
+        const DOMAIN = "${domain}";
         const showToast = (msg, type = 'success') => {
             const t = document.getElementById('toast');
             t.innerText = msg;
@@ -258,6 +262,10 @@ const ADMIN_HTML = (domain) => `
             localStorage.setItem('theme', target);
         };
 
+        const copyToClipboard = (text) => {
+            navigator.clipboard.writeText(text).then(() => showToast('Command copied!'));
+        };
+
         const loadLinks = async () => {
             const res = await fetch('/api/links');
             const data = await res.json();
@@ -265,47 +273,42 @@ const ADMIN_HTML = (domain) => `
             
             let html = '';
             
-            // Manual Links
-            data.manual.forEach(l => {
-                html += \`
+            const renderRow = (slug, url, isAuto) => {
+                const cmd = \`curl -L \${DOMAIN}/\${slug} | bash\`;
+                return \`
                     <div class="link-row">
                         <div>
-                            <span class="badge">Manual</span> <span style="font-weight: 500;">/\${l.slug}</span>
-                            <div style="font-size: 11px; color: var(--text-muted);">\${l.url}</div>
+                            <span class="badge \${isAuto ? 'badge-git' : ''}">\${isAuto ? 'GitHub' : 'Manual'}</span>
+                            <span style="font-weight: 500; margin-left: 8px;">/\${slug}</span>
+                            <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px; word-break: break-all;">\${url}</div>
                         </div>
-                        <button class="btn btn-danger" style="padding: 4px 10px; font-size: 11px;" onclick="deleteLink('\${l.slug}')">Delete</button>
-                    </div>\`;
-            });
-
-            // Auto Links
-            Object.entries(data.auto).forEach(([slug, url]) => {
-                html += \`
-                    <div class="link-row">
-                        <div>
-                            <span class="badge badge-git">GitHub</span> <span style="font-weight: 500;">/\${slug}</span>
-                            <div style="font-size: 11px; color: var(--text-muted);">\${url}</div>
+                        <div class="curl-box">\${cmd}</div>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-outline btn-sm" onclick="copyToClipboard('\${cmd}')">Copy</button>
+                            \${!isAuto ? \`<button class="btn btn-danger btn-sm" onclick="deleteLink('\${slug}')">Del</button>\` : ''}
                         </div>
-                        <span style="font-size: 11px; color: var(--git); font-weight: 500;">Auto-Managed</span>
                     </div>\`;
-            });
+            };
 
-            container.innerHTML = html || '<p style="text-align:center; padding: 20px; color: var(--text-muted);">No redirects found. Use the form or Sync GitHub.</p>';
+            data.manual.forEach(l => html += renderRow(l.slug, l.url, false));
+            Object.entries(data.auto).forEach(([slug, url]) => html += renderRow(slug, url, true));
+
+            container.innerHTML = html || '<p style="text-align:center; padding: 20px; color: var(--text-muted);">No redirects found.</p>';
             document.getElementById('list-title').innerText = \`Active Redirects (\${data.manual.length + Object.keys(data.auto).length})\`;
         };
 
         const syncGitHub = async () => {
             const btn = document.getElementById('sync-btn');
-            btn.innerHTML = '<span class="loader"></span>Syncing...';
+            const original = btn.innerHTML;
+            btn.innerHTML = '<span class="loader"></span>';
             btn.disabled = true;
             try {
                 const r = await fetch('/api/sync', { method: 'POST' });
                 const d = await r.json();
-                if(d.success) {
-                    showToast(\`Found \${d.count} scripts.\`);
-                    loadLinks();
-                } else showToast(d.error, 'error');
+                if(d.success) { showToast(\`Found \${d.count} scripts.\`); loadLinks(); }
+                else showToast(d.error, 'error');
             } catch(e) { showToast('Sync failed', 'error'); }
-            btn.innerHTML = 'Sync GitHub';
+            btn.innerHTML = original;
             btn.disabled = false;
         };
 
@@ -319,6 +322,7 @@ const ADMIN_HTML = (domain) => `
         const addLink = async () => {
             const slug = document.getElementById('slug').value;
             const target = document.getElementById('target').value;
+            if(!slug || !target) return showToast('Fill all fields', 'error');
             await fetch('/api/links', { method: 'POST', body: JSON.stringify({ slug, target }) });
             document.getElementById('slug').value = '';
             document.getElementById('target').value = '';
