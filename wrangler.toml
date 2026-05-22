@@ -1,0 +1,13 @@
+name = "raas-cf"
+main = "src/index.js"
+compatibility_date = "2024-05-22"
+
+[vars]
+GITHUB_USER = "simon-msdos"
+BASE_DOMAIN = "sh.serghini.me"
+MAIN_SITE = "simon.serghini.me"
+ADMIN_USER = "admin"
+
+[[kv_namespaces]]
+binding = "REDIRECTS"
+id = "YOUR_KV_NAMESPACE_ID_HERE"
