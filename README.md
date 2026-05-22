@@ -1,6 +1,6 @@
 # [ RAAS-CF ]
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simon-msdos/RAAS-CF)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simonserghini/RAAS-CF)
 
 **Redirect-as-a-Service on Cloudflare Workers.**
 
